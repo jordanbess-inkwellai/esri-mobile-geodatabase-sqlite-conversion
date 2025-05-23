@@ -1,0 +1,4 @@
+This is a dummy geodatabase file for testing.
+It does not need to be a valid SQLite database for these API tests,
+as CoreConverter will handle internal errors if it can't read it.
+The API test focuses on the upload and parameter handling.

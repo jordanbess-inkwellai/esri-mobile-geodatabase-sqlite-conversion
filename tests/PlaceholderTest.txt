@@ -1,0 +1,2 @@
+This is a placeholder test file.
+Unit tests for the EsriToGpkgConverter solution will be added here.
