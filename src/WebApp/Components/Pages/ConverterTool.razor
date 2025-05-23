@@ -1,0 +1,176 @@
+@page "/converter-tool"
+@using System.Net.Http
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+<PageTitle>GDB Converter Tool</PageTitle>
+
+<h1>ESRI Geodatabase to GeoPackage Converter</h1>
+
+<EditForm Model="@_model" OnValidSubmit="@HandleSubmitAsync">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+
+    <div class="mb-3">
+        <label for="fileInput" class="form-label">Geodatabase File (.gdb or .geodatabase):</label>
+        <InputFile id="fileInput" OnChange="@LoadFile" class="form-control" />
+        @if (_model.SelectedFile == null)
+        {
+            <small class="form-text text-danger">Please select a file.</small>
+        }
+    </div>
+
+    <div class="mb-3">
+        <label for="targetSrs" class="form-label">Target SRS:</label>
+        <InputText id="targetSrs" @bind-Value="_model.TargetSrs" class="form-control" />
+    </div>
+
+    <fieldset class="mb-3">
+        <legend>Bounding Box (Optional)</legend>
+        <div class="row">
+            <div class="col">
+                <label for="bboxMinX" class="form-label">Min X:</label>
+                <InputNumber id="bboxMinX" @bind-Value="_model.BboxMinX" class="form-control" />
+            </div>
+            <div class="col">
+                <label for="bboxMinY" class="form-label">Min Y:</label>
+                <InputNumber id="bboxMinY" @bind-Value="_model.BboxMinY" class="form-control" />
+            </div>
+            <div class="col">
+                <label for="bboxMaxX" class="form-label">Max X:</label>
+                <InputNumber id="bboxMaxX" @bind-Value="_model.BboxMaxX" class="form-control" />
+            </div>
+            <div class="col">
+                <label for="bboxMaxY" class="form-label">Max Y:</label>
+                <InputNumber id="bboxMaxY" @bind-Value="_model.BboxMaxY" class="form-control" />
+            </div>
+        </div>
+    </fieldset>
+
+    <button type="submit" class="btn btn-primary" disabled="@(_isProcessing || _model.SelectedFile == null)">
+        @if (_isProcessing)
+        {
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            <span> Processing...</span>
+        }
+        else
+        {
+            <span>Upload and Process</span>
+        }
+    </button>
+</EditForm>
+
+@if (!string.IsNullOrWhiteSpace(_errorMessage))
+{
+    <div class="alert alert-danger mt-3" role="alert">
+        @_errorMessage
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(_metadataLog))
+{
+    <div class="mt-3">
+        <h3>Processing Log:</h3>
+        <pre style="max-height: 500px; overflow-y: auto; background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px;">@_metadataLog</pre>
+    </div>
+}
+
+@code {
+    private class ConverterFormModel
+    {
+        public IBrowserFile? SelectedFile { get; set; }
+        public string TargetSrs { get; set; } = "EPSG:4326";
+        public double? BboxMinX { get; set; }
+        public double? BboxMinY { get; set; }
+        public double? BboxMaxX { get; set; }
+        public double? BboxMaxY { get; set; }
+    }
+
+    private ConverterFormModel _model = new();
+    private string? _metadataLog;
+    private string? _errorMessage;
+    private bool _isProcessing = false;
+    private long _maxFileSize = 500 * 1024 * 1024; // 500 MB, example limit
+
+    private void LoadFile(InputFileChangeEventArgs e)
+    {
+        _errorMessage = null;
+        _metadataLog = null;
+        if (e.FileCount > 0)
+        {
+            if (e.File.Size > _maxFileSize)
+            {
+                _errorMessage = $"File size exceeds the limit of {_maxFileSize / (1024*1024)} MB.";
+                _model.SelectedFile = null;
+                return;
+            }
+            _model.SelectedFile = e.File;
+        }
+    }
+
+    private async Task HandleSubmitAsync()
+    {
+        if (_model.SelectedFile == null)
+        {
+            _errorMessage = "Please select a file to upload.";
+            return;
+        }
+
+        _isProcessing = true;
+        _errorMessage = null;
+        _metadataLog = null;
+
+        try
+        {
+            using var content = new MultipartFormDataContent();
+            
+            // File content
+            // MaxAllowedSize on InputFile is for client-side validation, actual stream size needs to be handled.
+            var fileStreamContent = new StreamContent(_model.SelectedFile.OpenReadStream(maxAllowedSize: _maxFileSize));
+            fileStreamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(_model.SelectedFile.ContentType);
+            content.Add(content: fileStreamContent, name: "\"file\"", fileName: _model.SelectedFile.Name);
+
+            // Other form fields
+            content.Add(new StringContent(_model.TargetSrs), "\"targetSrs\"");
+
+            if (_model.BboxMinX.HasValue && _model.BboxMinY.HasValue && _model.BboxMaxX.HasValue && _model.BboxMaxY.HasValue)
+            {
+                var bboxString = $"{_model.BboxMinX.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+                                 $"{_model.BboxMinY.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+                                 $"{_model.BboxMaxX.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+                                 $"{_model.BboxMaxY.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+                content.Add(new StringContent(bboxString), "\"bbox\"");
+            }
+
+            // The HttpClient base address should be configured in Program.cs to point to your WebApi.
+            // For example: builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri("https://localhost:7001") });
+            // Replace 7001 with the actual port of your WebApi project.
+            var response = await Http.PostAsync("api/Convert/UploadAndProcess", content);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var result = await response.Content.ReadFromJsonAsync<ProcessResult>();
+                _metadataLog = result?.MetadataLog;
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _errorMessage = $"Error uploading or processing file: {response.ReasonPhrase}. Details: {errorContent}";
+                // Consider parsing errorContent if it's a structured JSON error from the API.
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"An unexpected error occurred: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+        }
+    }
+
+    public class ProcessResult
+    {
+        public string? MetadataLog { get; set; }
+    }
+}
